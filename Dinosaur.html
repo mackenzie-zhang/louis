@@ -1,0 +1,1139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小恐龙大战</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: linear-gradient(to bottom, #87CEEB, #98D8C8);
+            font-family: Arial, sans-serif;
+        }
+        #gameContainer {
+            text-align: center;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+        }
+        canvas {
+            border: 2px solid #333;
+            display: block;
+            margin: 0 auto;
+            background: linear-gradient(to bottom, #e3f2fd, #f5f5f5);
+        }
+        #info {
+            margin-top: 10px;
+            font-size: 18px;
+        }
+        #controls {
+            margin-top: 15px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            margin: 0 5px;
+            cursor: pointer;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        #instructions {
+            margin-top: 15px;
+            padding: 10px;
+            background: #f9f9f9;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        #skillStatus {
+            margin-top: 10px;
+            font-size: 16px;
+            color: #1976D2;
+        }
+        .skill-ready {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        .skill-cooldown {
+            color: #F44336;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <h1>🦕 小恐龙大战 🦖</h1>
+        <canvas id="gameCanvas" width="800" height="400"></canvas>
+        <div id="info">
+            <span>生命值: <span id="health">100</span></span> | 
+            <span>得分: <span id="score">0</span></span> | 
+            <span>霸王龙生命值: <span id="bossHealth">300</span></span>
+        </div>
+        <div id="skillStatus">
+            光波技能 (Q键): <span id="laserStatus" class="skill-ready">准备就绪</span>
+        </div>
+        <div id="controls">
+            <button onclick="startGame()">开始游戏</button>
+            <button onclick="pauseGame()">暂停</button>
+        </div>
+        <div id="instructions">
+            <strong>操作说明：</strong><br>
+            ↑↓←→ 或 WASD - 移动小恐龙<br>
+            空格键 - 发射火球<br>
+            Q键 - 发射光波（30秒冷却）<br>
+            躲避霸王龙的攻击，小心它的大招！<br>
+            <br>
+            <strong style="color: #F44336;">注意：</strong>要显示真实霸王龙图片，请：<br>
+            1. 上传霸王龙图片到网上（如imgur.com）<br>
+            2. 在代码第97行修改 loadBossImage('图片URL')<br>
+            3. 图片建议尺寸：120x120像素
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        let gameRunning = false;
+        let gamePaused = false;
+        let animationId;
+        
+        // 游戏对象
+        const player = {
+            x: 100,
+            y: 250,
+            width: 70,
+            height: 70,
+            speed: 5,
+            health: 100,
+            maxHealth: 100,
+            direction: 1,
+            mouthOpen: false,
+            mouthTimer: 0,
+            walkCycle: 0,
+            laserCooldown: 0,
+            laserMaxCooldown: 30 * 60 // 30秒，60fps
+        };
+        
+        const boss = {
+            x: 600,
+            y: 150,
+            width: 120,
+            height: 120,
+            health: 500,
+            maxHealth: 500,
+            attackCooldown: 0,
+            moveDirection: 1,
+            speed: 1.5,
+            mouthOpen: false,
+            mouthTimer: 0,
+            hitAnimation: 0,
+            walkCycle: 0,
+            ultimateCooldown: 0,
+            ultimateMaxCooldown: 10 * 60, // 10秒冷却
+            isCharging: false,
+            chargeTime: 0
+        };
+        
+        let fireballs = [];
+        let enemyAttacks = [];
+        let lasers = [];
+        let particles = [];
+        let score = 0;
+        let keys = {};
+        
+        // 键盘事件
+        document.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            if (e.key === ' ') {
+                e.preventDefault();
+                shootFireball();
+            }
+            if (e.key === 'q' || e.key === 'Q') {
+                e.preventDefault();
+                shootLaser();
+            }
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+        
+        // 霸王龙图片对象
+        let bossImage = null;
+        let bossImageLoaded = false;
+        
+        // 加载霸王龙图片
+        function loadBossImage(url) {
+            bossImage = new Image();
+            bossImage.onload = function() {
+                bossImageLoaded = true;
+            };
+            bossImage.src = url;
+        }
+        
+        // 绘制霸王龙风格的恐龙
+        function drawTRex(dino, isPlayer) {
+            ctx.save();
+            
+            // 受击闪烁
+            if (!isPlayer && boss.hitAnimation > 0) {
+                ctx.globalAlpha = boss.hitAnimation % 2 === 0 ? 0.5 : 1;
+                boss.hitAnimation--;
+            }
+            
+            // 充能效果
+            if (!isPlayer && boss.isCharging) {
+                ctx.shadowBlur = 20;
+                ctx.shadowColor = '#FF00FF';
+            }
+            
+            // 如果是霸王龙且有图片，直接绘制图片
+            if (!isPlayer && bossImageLoaded && bossImage) {
+                ctx.save();
+                
+                // 受击闪烁
+                if (boss.hitAnimation > 0) {
+                    ctx.globalAlpha = boss.hitAnimation % 2 === 0 ? 0.5 : 1;
+                    boss.hitAnimation--;
+                }
+                
+                // 充能效果
+                if (boss.isCharging) {
+                    ctx.shadowBlur = 20;
+                    ctx.shadowColor = '#FF00FF';
+                }
+                
+                // 绘制图片
+                ctx.drawImage(bossImage, dino.x, dino.y, dino.width, dino.height);
+                
+                ctx.restore();
+                return;
+            }
+            
+            const scale = isPlayer ? 0.7 : 1;
+            const mainColor = isPlayer ? '#4CAF50' : '#2E7D32';
+            const bellyColor = isPlayer ? '#FFE082' : '#FFF176';
+            const darkColor = isPlayer ? '#1B5E20' : '#0D4F0D';
+            
+            // 如果是玩家且朝左
+            if (isPlayer && player.direction === -1) {
+                ctx.translate(dino.x + dino.width, dino.y);
+                ctx.scale(-1, 1);
+                ctx.translate(-dino.x, -dino.y);
+            }
+            
+            // 影子
+            ctx.fillStyle = 'rgba(0,0,0,0.2)';
+            ctx.ellipse(dino.x + dino.width/2, dino.y + dino.height + 5, 
+                       dino.width/2.5 * scale, 8 * scale, 0, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // 尾巴
+            ctx.fillStyle = mainColor;
+            ctx.strokeStyle = darkColor;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(dino.x + dino.width * 0.1, dino.y + dino.height * 0.6);
+            ctx.quadraticCurveTo(
+                dino.x - dino.width * 0.3, dino.y + dino.height * 0.5,
+                dino.x - dino.width * 0.2, dino.y + dino.height * 0.8
+            );
+            ctx.quadraticCurveTo(
+                dino.x - dino.width * 0.1, dino.y + dino.height * 0.9,
+                dino.x + dino.width * 0.2, dino.y + dino.height * 0.8
+            );
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            
+            // 后腿
+            const legOffset = Math.sin(dino.walkCycle) * 5 * scale;
+            ctx.fillStyle = mainColor;
+            // 左后腿
+            ctx.beginPath();
+            ctx.ellipse(dino.x + dino.width * 0.3, dino.y + dino.height * 0.85 + legOffset, 
+                       15 * scale, 25 * scale, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            // 右后腿
+            ctx.beginPath();
+            ctx.ellipse(dino.x + dino.width * 0.5, dino.y + dino.height * 0.85 - legOffset, 
+                       15 * scale, 25 * scale, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            
+            // 脚
+            ctx.fillStyle = mainColor;
+            // 左脚
+            ctx.beginPath();
+            ctx.ellipse(dino.x + dino.width * 0.25, dino.y + dino.height + legOffset/2, 
+                       20 * scale, 10 * scale, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            // 右脚
+            ctx.beginPath();
+            ctx.ellipse(dino.x + dino.width * 0.5, dino.y + dino.height - legOffset/2, 
+                       20 * scale, 10 * scale, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            
+            // 身体
+            ctx.fillStyle = mainColor;
+            ctx.beginPath();
+            ctx.ellipse(dino.x + dino.width * 0.4, dino.y + dino.height * 0.6, 
+                       dino.width * 0.35 * scale, dino.height * 0.4 * scale, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            
+            // 肚皮
+            ctx.fillStyle = bellyColor;
+            ctx.beginPath();
+            ctx.ellipse(dino.x + dino.width * 0.45, dino.y + dino.height * 0.65, 
+                       dino.width * 0.25 * scale, dino.height * 0.3 * scale, 0, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // 肚皮纹路
+            ctx.strokeStyle = darkColor;
+            ctx.lineWidth = 1;
+            for (let i = 0; i < 4; i++) {
+                ctx.beginPath();
+                ctx.moveTo(dino.x + dino.width * 0.25, dino.y + dino.height * (0.55 + i * 0.06));
+                ctx.lineTo(dino.x + dino.width * 0.65, dino.y + dino.height * (0.55 + i * 0.06));
+                ctx.stroke();
+            }
+            
+            // 小手臂
+            ctx.fillStyle = mainColor;
+            ctx.lineWidth = 2;
+            // 左手
+            ctx.beginPath();
+            ctx.ellipse(dino.x + dino.width * 0.55, dino.y + dino.height * 0.45, 
+                       8 * scale, 12 * scale, -0.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            // 右手
+            ctx.beginPath();
+            ctx.ellipse(dino.x + dino.width * 0.7, dino.y + dino.height * 0.45, 
+                       8 * scale, 12 * scale, 0.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            
+            // 手指
+            ctx.strokeStyle = darkColor;
+            ctx.lineWidth = 2;
+            // 左手指
+            for (let i = 0; i < 3; i++) {
+                ctx.beginPath();
+                ctx.moveTo(dino.x + dino.width * 0.55, dino.y + dino.height * 0.5);
+                ctx.lineTo(dino.x + dino.width * (0.52 + i * 0.02), dino.y + dino.height * 0.53);
+                ctx.stroke();
+            }
+            // 右手指
+            for (let i = 0; i < 3; i++) {
+                ctx.beginPath();
+                ctx.moveTo(dino.x + dino.width * 0.7, dino.y + dino.height * 0.5);
+                ctx.lineTo(dino.x + dino.width * (0.68 + i * 0.02), dino.y + dino.height * 0.53);
+                ctx.stroke();
+            }
+            
+            // 脖子
+            ctx.fillStyle = mainColor;
+            ctx.beginPath();
+            ctx.ellipse(dino.x + dino.width * 0.6, dino.y + dino.height * 0.35, 
+                       dino.width * 0.15 * scale, dino.height * 0.2 * scale, -0.3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            
+            // 头部
+            ctx.fillStyle = mainColor;
+            ctx.beginPath();
+            ctx.ellipse(dino.x + dino.width * 0.75, dino.y + dino.height * 0.2, 
+                       dino.width * 0.25 * scale, dino.height * 0.2 * scale, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            
+            // 鼻子部分
+            ctx.beginPath();
+            ctx.ellipse(dino.x + dino.width * 0.9, dino.y + dino.height * 0.22, 
+                       dino.width * 0.15 * scale, dino.height * 0.12 * scale, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            
+            // 鼻孔
+            ctx.fillStyle = darkColor;
+            ctx.beginPath();
+            ctx.arc(dino.x + dino.width * 0.93, dino.y + dino.height * 0.18, 2 * scale, 0, Math.PI * 2);
+            ctx.arc(dino.x + dino.width * 0.93, dino.y + dino.height * 0.23, 2 * scale, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // 眼睛
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.arc(dino.x + dino.width * 0.75, dino.y + dino.height * 0.15, 
+                   15 * scale, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = darkColor;
+            ctx.stroke();
+            
+            // 瞳孔
+            ctx.fillStyle = 'black';
+            ctx.beginPath();
+            ctx.arc(dino.x + dino.width * 0.77, dino.y + dino.height * 0.15, 
+                   8 * scale, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // 眼睛高光
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.arc(dino.x + dino.width * 0.79, dino.y + dino.height * 0.13, 
+                   3 * scale, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // 嘴巴
+            ctx.strokeStyle = darkColor;
+            ctx.lineWidth = 3 * scale;
+            ctx.beginPath();
+            ctx.moveTo(dino.x + dino.width * 0.65, dino.y + dino.height * 0.25);
+            ctx.quadraticCurveTo(
+                dino.x + dino.width * 0.8, dino.y + dino.height * 0.28,
+                dino.x + dino.width * 0.95, dino.y + dino.height * 0.25
+            );
+            ctx.stroke();
+            
+            // 嘴巴内部（张嘴时）
+            if (dino.mouthOpen) {
+                // 下颌
+                ctx.strokeStyle = darkColor;
+                ctx.lineWidth = 3 * scale;
+                ctx.beginPath();
+                ctx.moveTo(dino.x + dino.width * 0.65, dino.y + dino.height * 0.25);
+                ctx.quadraticCurveTo(
+                    dino.x + dino.width * 0.8, dino.y + dino.height * 0.35,
+                    dino.x + dino.width * 0.95, dino.y + dino.height * 0.3
+                );
+                ctx.stroke();
+                
+                // 嘴巴内部
+                ctx.fillStyle = '#D32F2F';
+                ctx.beginPath();
+                ctx.moveTo(dino.x + dino.width * 0.65, dino.y + dino.height * 0.25);
+                ctx.quadraticCurveTo(
+                    dino.x + dino.width * 0.8, dino.y + dino.height * 0.28,
+                    dino.x + dino.width * 0.95, dino.y + dino.height * 0.25
+                );
+                ctx.quadraticCurveTo(
+                    dino.x + dino.width * 0.8, dino.y + dino.height * 0.32,
+                    dino.x + dino.width * 0.65, dino.y + dino.height * 0.25
+                );
+                ctx.fill();
+                
+                // 牙齿
+                ctx.fillStyle = 'white';
+                // 上牙
+                for (let i = 0; i < 5; i++) {
+                    const toothX = dino.x + dino.width * (0.68 + i * 0.05);
+                    const toothY = dino.y + dino.height * 0.25;
+                    ctx.beginPath();
+                    ctx.moveTo(toothX, toothY);
+                    ctx.lineTo(toothX - 3 * scale, toothY + 6 * scale);
+                    ctx.lineTo(toothX + 3 * scale, toothY + 6 * scale);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+                // 下牙
+                for (let i = 0; i < 4; i++) {
+                    const toothX = dino.x + dino.width * (0.7 + i * 0.05);
+                    const toothY = dino.y + dino.height * 0.32;
+                    ctx.beginPath();
+                    ctx.moveTo(toothX, toothY);
+                    ctx.lineTo(toothX - 2 * scale, toothY - 5 * scale);
+                    ctx.lineTo(toothX + 2 * scale, toothY - 5 * scale);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+                
+                // 舌头
+                ctx.fillStyle = '#FF69B4';
+                ctx.beginPath();
+                ctx.ellipse(dino.x + dino.width * 0.8, dino.y + dino.height * 0.3, 
+                           8 * scale, 4 * scale, 0.2, 0, Math.PI);
+                ctx.fill();
+            }
+            
+            // 身上的斑点
+            ctx.fillStyle = darkColor;
+            for (let i = 0; i < 5; i++) {
+                const spotX = dino.x + dino.width * (0.3 + Math.random() * 0.4);
+                const spotY = dino.y + dino.height * (0.4 + Math.random() * 0.3);
+                ctx.beginPath();
+                ctx.arc(spotX, spotY, (2 + Math.random() * 2) * scale, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            ctx.restore();
+        }
+        
+        // 创建粒子效果
+        function createParticles(x, y, color, count = 8) {
+            for (let i = 0; i < count; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 6,
+                    vy: (Math.random() - 0.5) * 6,
+                    life: 30,
+                    color: color,
+                    size: Math.random() * 4 + 2
+                });
+            }
+        }
+        
+        // 发射火球
+        function shootFireball() {
+            if (!gameRunning || gamePaused) return;
+            
+            player.mouthOpen = true;
+            player.mouthTimer = 10;
+            
+            fireballs.push({
+                x: player.x + (player.direction === 1 ? player.width * 0.9 : player.width * 0.1),
+                y: player.y + player.height * 0.25,
+                width: 25,
+                height: 25,
+                speed: 7 * player.direction,
+                rotation: 0
+            });
+        }
+        
+        // 发射光波
+        function shootLaser() {
+            if (!gameRunning || gamePaused || player.laserCooldown > 0) return;
+            
+            player.mouthOpen = true;
+            player.mouthTimer = 20;
+            player.laserCooldown = player.laserMaxCooldown;
+            
+            // 创建光波
+            lasers.push({
+                x: player.x + (player.direction === 1 ? player.width : 0),
+                y: player.y + player.height * 0.25,
+                width: 300,
+                height: 40,
+                speed: 15 * player.direction,
+                life: 40,
+                opacity: 1
+            });
+            
+            // 光波粒子效果
+            for (let i = 0; i < 15; i++) {
+                createParticles(
+                    player.x + (player.direction === 1 ? player.width : 0),
+                    player.y + player.height * 0.25,
+                    ['#00FFFF', '#00BFFF', '#1E90FF'][Math.floor(Math.random() * 3)],
+                    5
+                );
+            }
+        }
+        
+        // 霸王龙普通攻击
+        function bossAttack() {
+            if (boss.attackCooldown <= 0 && boss.health > 0 && !boss.isCharging) {
+                boss.mouthOpen = true;
+                boss.mouthTimer = 20;
+                
+                enemyAttacks.push({
+                    x: boss.x,
+                    y: boss.y + boss.height * 0.25,
+                    width: 35,
+                    height: 35,
+                    speed: 4,
+                    rotation: 0,
+                    isUltimate: false
+                });
+                boss.attackCooldown = 60;
+            }
+        }
+        
+        // 霸王龙大招
+        function bossUltimate() {
+            if (boss.ultimateCooldown <= 0 && boss.health > 0 && boss.health < boss.maxHealth * 0.5) {
+                boss.isCharging = true;
+                boss.chargeTime = 60; // 1秒充能
+                boss.ultimateCooldown = boss.ultimateMaxCooldown;
+            }
+        }
+        
+        // 释放大招
+        function releaseBossUltimate() {
+            boss.isCharging = false;
+            boss.mouthOpen = true;
+            boss.mouthTimer = 30;
+            
+            // 创建巨大能量球
+            enemyAttacks.push({
+                x: boss.x - 30,
+                y: boss.y + boss.height * 0.25,
+                width: 80,
+                height: 80,
+                speed: 3,
+                rotation: 0,
+                isUltimate: true
+            });
+            
+            // 震撼效果
+            for (let i = 0; i < 30; i++) {
+                createParticles(
+                    boss.x,
+                    boss.y + boss.height * 0.25,
+                    ['#FF00FF', '#FF1493', '#FF69B4'][Math.floor(Math.random() * 3)],
+                    10
+                );
+            }
+        }
+        
+        // 更新游戏状态
+        function update() {
+            if (!gameRunning || gamePaused) return;
+            
+            // 更新技能冷却
+            if (player.laserCooldown > 0) {
+                player.laserCooldown--;
+                updateSkillStatus();
+            }
+            
+            // 更新行走动画
+            if (keys['ArrowLeft'] || keys['a'] || keys['A'] || 
+                keys['ArrowRight'] || keys['d'] || keys['D'] ||
+                keys['ArrowUp'] || keys['w'] || keys['W'] ||
+                keys['ArrowDown'] || keys['s'] || keys['S']) {
+                player.walkCycle += 0.2;
+            }
+            boss.walkCycle += 0.1;
+            
+            // 更新嘴巴动画
+            if (player.mouthTimer > 0) {
+                player.mouthTimer--;
+                if (player.mouthTimer === 0) player.mouthOpen = false;
+            }
+            if (boss.mouthTimer > 0) {
+                boss.mouthTimer--;
+                if (boss.mouthTimer === 0) boss.mouthOpen = false;
+            }
+            
+            // 玩家移动
+            if (keys['ArrowUp'] || keys['w'] || keys['W']) {
+                player.y = Math.max(0, player.y - player.speed);
+            }
+            if (keys['ArrowDown'] || keys['s'] || keys['S']) {
+                player.y = Math.min(canvas.height - player.height - 10, player.y + player.speed);
+            }
+            if (keys['ArrowLeft'] || keys['a'] || keys['A']) {
+                player.x = Math.max(0, player.x - player.speed);
+                player.direction = -1;
+            }
+            if (keys['ArrowRight'] || keys['d'] || keys['D']) {
+                player.x = Math.min(canvas.width - player.width, player.x + player.speed);
+                player.direction = 1;
+            }
+            
+            // 霸王龙移动
+            if (boss.health > 0 && !boss.isCharging) {
+                boss.y += boss.speed * boss.moveDirection;
+                if (boss.y <= 0 || boss.y >= canvas.height - boss.height - 10) {
+                    boss.moveDirection *= -1;
+                }
+            }
+            
+            // 更新充能
+            if (boss.isCharging) {
+                boss.chargeTime--;
+                if (boss.chargeTime <= 0) {
+                    releaseBossUltimate();
+                }
+            }
+            
+            // 更新火球
+            for (let i = fireballs.length - 1; i >= 0; i--) {
+                const fireball = fireballs[i];
+                fireball.x += fireball.speed;
+                fireball.rotation += 0.2;
+                
+                if (boss.health > 0 && checkCollision(fireball, boss)) {
+                    boss.health -= 10;
+                    boss.hitAnimation = 10;
+                    score += 10;
+                    createParticles(fireball.x, fireball.y, '#FFA500');
+                    createParticles(fireball.x, fireball.y, '#FFD700', 5);
+                    updateUI();
+                    fireballs.splice(i, 1);
+                    continue;
+                }
+                
+                if (fireball.x > canvas.width || fireball.x < -fireball.width) {
+                    fireballs.splice(i, 1);
+                }
+            }
+            
+            // 更新光波
+            for (let i = lasers.length - 1; i >= 0; i--) {
+                const laser = lasers[i];
+                laser.x += laser.speed;
+                laser.life--;
+                laser.opacity = laser.life / 40;
+                
+                if (boss.health > 0 && checkCollision(laser, boss)) {
+                    boss.health -= 50; // 光波造成大量伤害
+                    boss.hitAnimation = 20;
+                    score += 50;
+                    createParticles(laser.x + laser.width/2, laser.y + laser.height/2, '#00FFFF', 20);
+                    updateUI();
+                    lasers.splice(i, 1);
+                    continue;
+                }
+                
+                if (laser.life <= 0) {
+                    lasers.splice(i, 1);
+                }
+            }
+            
+            // 更新敌人攻击
+            for (let i = enemyAttacks.length - 1; i >= 0; i--) {
+                const attack = enemyAttacks[i];
+                attack.x -= attack.speed;
+                attack.rotation += 0.15;
+                
+                if (checkCollision(attack, player)) {
+                    player.health -= attack.isUltimate ? 50 : 20;
+                    createParticles(attack.x, attack.y, '#9B59B6');
+                    createParticles(attack.x, attack.y, '#E91E63', 5);
+                    updateUI();
+                    enemyAttacks.splice(i, 1);
+                    continue;
+                }
+                
+                if (attack.x < -attack.width) {
+                    enemyAttacks.splice(i, 1);
+                }
+            }
+            
+            // 更新粒子
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vy += 0.3;
+                p.life--;
+                p.size *= 0.98;
+                if (p.life <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+            
+            // 霸王龙攻击逻辑
+            if (boss.health > 0) {
+                if (boss.attackCooldown > 0) boss.attackCooldown--;
+                if (boss.ultimateCooldown > 0) boss.ultimateCooldown--;
+                
+                // 普通攻击
+                if (Math.random() < 0.02) {
+                    bossAttack();
+                }
+                
+                // 大招（血量低于50%时开始使用）
+                if (Math.random() < 0.01) {
+                    bossUltimate();
+                }
+            }
+            
+            // 检查游戏结束
+            if (player.health <= 0) {
+                gameOver(false);
+            } else if (boss.health <= 0 && gameRunning) {
+                for (let j = 0; j < 20; j++) {
+                    setTimeout(() => {
+                        createParticles(
+                            boss.x + Math.random() * boss.width, 
+                            boss.y + Math.random() * boss.height, 
+                            ['#FF6B6B', '#FFA500', '#FFD700'][Math.floor(Math.random() * 3)],
+                            10
+                        );
+                    }, j * 50);
+                }
+                gameOver(true);
+            }
+        }
+        
+        // 碰撞检测
+        function checkCollision(obj1, obj2) {
+            return obj1.x < obj2.x + obj2.width &&
+                   obj1.x + obj1.width > obj2.x &&
+                   obj1.y < obj2.y + obj2.height &&
+                   obj1.y + obj1.height > obj2.y;
+        }
+        
+        // 绘制火球
+        function drawFireball(fireball) {
+            ctx.save();
+            ctx.translate(fireball.x + fireball.width/2, fireball.y + fireball.height/2);
+            ctx.rotate(fireball.rotation);
+            
+            const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, fireball.width/2);
+            gradient.addColorStop(0, '#FFFF00');
+            gradient.addColorStop(0.5, '#FFA500');
+            gradient.addColorStop(1, '#FF4500');
+            
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.arc(0, 0, fireball.width/2, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.fillStyle = '#FFFACD';
+            ctx.beginPath();
+            ctx.arc(0, 0, fireball.width/4, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.restore();
+        }
+        
+        // 绘制光波
+        function drawLaser(laser) {
+            ctx.save();
+            ctx.globalAlpha = laser.opacity;
+            
+            // 光波主体
+            const gradient = ctx.createLinearGradient(laser.x, laser.y, laser.x + laser.width, laser.y);
+            gradient.addColorStop(0, '#00FFFF');
+            gradient.addColorStop(0.5, '#00BFFF');
+            gradient.addColorStop(1, 'rgba(0, 191, 255, 0)');
+            
+            ctx.fillStyle = gradient;
+            ctx.fillRect(laser.x, laser.y, laser.width, laser.height);
+            
+            // 光波边缘
+            ctx.strokeStyle = '#00FFFF';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(laser.x, laser.y, laser.width, laser.height);
+            
+            // 光波核心
+            const coreGradient = ctx.createLinearGradient(laser.x, laser.y + laser.height/4, 
+                                                         laser.x + laser.width, laser.y + laser.height/4);
+            coreGradient.addColorStop(0, '#FFFFFF');
+            coreGradient.addColorStop(0.5, '#00FFFF');
+            coreGradient.addColorStop(1, 'rgba(0, 255, 255, 0)');
+            
+            ctx.fillStyle = coreGradient;
+            ctx.fillRect(laser.x, laser.y + laser.height/4, laser.width, laser.height/2);
+            
+            ctx.restore();
+        }
+        
+        // 绘制能量球
+        function drawEnergyBall(attack) {
+            ctx.save();
+            ctx.translate(attack.x + attack.width/2, attack.y + attack.height/2);
+            ctx.rotate(attack.rotation);
+            
+            if (attack.isUltimate) {
+                // 大招能量球
+                const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, attack.width/2);
+                gradient.addColorStop(0, '#FF00FF');
+                gradient.addColorStop(0.3, '#FF1493');
+                gradient.addColorStop(0.6, '#C71585');
+                gradient.addColorStop(1, '#8B008B');
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(0, 0, attack.width/2, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // 能量环
+                for (let i = 0; i < 3; i++) {
+                    ctx.strokeStyle = '#FF00FF';
+                    ctx.lineWidth = 2;
+                    ctx.globalAlpha = 0.5 - i * 0.15;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, attack.width/2 + 10 + i * 10, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            } else {
+                // 普通能量球
+                const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, attack.width/2);
+                gradient.addColorStop(0, '#E91E63');
+                gradient.addColorStop(0.5, '#9B59B6');
+                gradient.addColorStop(1, '#673AB7');
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(0, 0, attack.width/2, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.strokeStyle = '#E91E63';
+                ctx.lineWidth = 2;
+                ctx.globalAlpha = 0.5;
+                ctx.beginPath();
+                ctx.arc(0, 0, attack.width/2 + 5, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            
+            ctx.restore();
+        }
+        
+        // 绘制充能效果
+        function drawChargingEffect() {
+            if (boss.isCharging) {
+                ctx.save();
+                ctx.globalAlpha = 0.3 + Math.sin(boss.chargeTime * 0.3) * 0.2;
+                
+                // 充能圈
+                const gradient = ctx.createRadialGradient(
+                    boss.x + boss.width/2, boss.y + boss.height/2, 0,
+                    boss.x + boss.width/2, boss.y + boss.height/2, boss.width
+                );
+                gradient.addColorStop(0, '#FF00FF');
+                gradient.addColorStop(0.5, '#FF1493');
+                gradient.addColorStop(1, 'rgba(255, 0, 255, 0)');
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(boss.x + boss.width/2, boss.y + boss.height/2, boss.width, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // 充能文字
+                ctx.globalAlpha = 1;
+                ctx.fillStyle = '#FF00FF';
+                ctx.font = 'bold 20px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('充能中！', boss.x + boss.width/2, boss.y - 40);
+                
+                ctx.restore();
+            }
+        }
+        
+        // 绘制游戏画面
+        function draw() {
+            // 清空画布
+            ctx.fillStyle = '#E3F2FD';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // 绘制云朵
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
+            drawCloud(100, 50, 40);
+            drawCloud(300, 80, 30);
+            drawCloud(500, 40, 50);
+            drawCloud(700, 70, 35);
+            
+            // 绘制地面
+            ctx.fillStyle = '#8BC34A';
+            ctx.fillRect(0, canvas.height - 20, canvas.width, 20);
+            ctx.fillStyle = '#689F38';
+            ctx.fillRect(0, canvas.height - 10, canvas.width, 10);
+            
+            // 绘制小草
+            ctx.fillStyle = '#558B2F';
+            for (let i = 0; i < canvas.width; i += 30) {
+                ctx.beginPath();
+                ctx.moveTo(i, canvas.height - 10);
+                ctx.lineTo(i - 5, canvas.height - 20);
+                ctx.lineTo(i + 5, canvas.height - 20);
+                ctx.closePath();
+                ctx.fill();
+            }
+            
+            // 绘制充能效果
+            drawChargingEffect();
+            
+            // 绘制玩家血条
+            drawHealthBar(player.x, player.y - 20, player.width, 8, 
+                         player.health, player.maxHealth, '#4CAF50');
+            
+            // 绘制小恐龙
+            drawTRex(player, true);
+            
+            // 绘制霸王龙
+            if (boss.health > 0) {
+                drawTRex(boss, false);
+                
+                // 绘制霸王龙血条
+                drawHealthBar(boss.x, boss.y - 25, boss.width, 10, 
+                             boss.health, boss.maxHealth, '#FF5252');
+            }
+            
+            // 绘制光波
+            lasers.forEach(laser => {
+                drawLaser(laser);
+            });
+            
+            // 绘制火球
+            fireballs.forEach(fireball => {
+                drawFireball(fireball);
+            });
+            
+            // 绘制能量球
+            enemyAttacks.forEach(attack => {
+                drawEnergyBall(attack);
+            });
+            
+            // 绘制粒子
+            particles.forEach(p => {
+                ctx.fillStyle = p.color;
+                ctx.globalAlpha = p.life / 30;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            });
+            
+            // 暂停提示
+            if (gamePaused) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 48px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('游戏暂停', canvas.width / 2, canvas.height / 2);
+                ctx.font = '24px Arial';
+                ctx.fillText('按暂停键继续', canvas.width / 2, canvas.height / 2 + 50);
+                ctx.textAlign = 'left';
+            }
+        }
+        
+        // 绘制云朵
+        function drawCloud(x, y, size) {
+            ctx.beginPath();
+            ctx.arc(x, y, size * 0.8, 0, Math.PI * 2);
+            ctx.arc(x - size * 0.6, y, size * 0.6, 0, Math.PI * 2);
+            ctx.arc(x + size * 0.6, y, size * 0.6, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        
+        // 绘制血条
+        function drawHealthBar(x, y, width, height, health, maxHealth, color) {
+            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            ctx.fillRect(x, y, width, height);
+            
+            ctx.fillStyle = color;
+            ctx.fillRect(x, y, width * (health / maxHealth), height);
+            
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x, y, width, height);
+        }
+        
+        // 更新技能状态显示
+        function updateSkillStatus() {
+            const statusEl = document.getElementById('laserStatus');
+            if (player.laserCooldown > 0) {
+                const seconds = Math.ceil(player.laserCooldown / 60);
+                statusEl.textContent = `冷却中 (${seconds}秒)`;
+                statusEl.className = 'skill-cooldown';
+            } else {
+                statusEl.textContent = '准备就绪';
+                statusEl.className = 'skill-ready';
+            }
+        }
+        
+        // 游戏主循环
+        function gameLoop() {
+            update();
+            draw();
+            if (gameRunning) {
+                animationId = requestAnimationFrame(gameLoop);
+            }
+        }
+        
+        // 更新UI
+        function updateUI() {
+            document.getElementById('health').textContent = Math.max(0, player.health);
+            document.getElementById('score').textContent = score;
+            document.getElementById('bossHealth').textContent = Math.max(0, boss.health);
+        }
+        
+        // 开始游戏
+        function startGame() {
+            // TODO: 上传霸王龙图片后，修改下面这行的URL
+            // loadBossImage('你的霸王龙图片URL');
+            
+            player.x = 100;
+            player.y = 250;
+            player.health = 100;
+            player.direction = 1;
+            player.mouthOpen = false;
+            player.mouthTimer = 0;
+            player.walkCycle = 0;
+            player.laserCooldown = 0;
+            
+            boss.x = 600;
+            boss.y = 180;
+            boss.health = 300;
+            boss.attackCooldown = 0;
+            boss.mouthOpen = false;
+            boss.mouthTimer = 0;
+            boss.hitAnimation = 0;
+            boss.walkCycle = 0;
+            boss.ultimateCooldown = 0;
+            boss.isCharging = false;
+            boss.chargeTime = 0;
+            
+            fireballs = [];
+            enemyAttacks = [];
+            lasers = [];
+            particles = [];
+            score = 0;
+            gameRunning = true;
+            gamePaused = false;
+            
+            updateUI();
+            updateSkillStatus();
+            
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+            }
+            gameLoop();
+        }
+        
+        // 暂停游戏
+        function pauseGame() {
+            if (!gameRunning) return;
+            gamePaused = !gamePaused;
+        }
+        
+        // 游戏结束
+        function gameOver(won) {
+            gameRunning = false;
+            
+            setTimeout(() => {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 48px Arial';
+                ctx.textAlign = 'center';
+                
+                if (won) {
+                    ctx.fillText('🎉 胜利！', canvas.width / 2, canvas.height / 2 - 50);
+                    ctx.font = 'bold 32px Arial';
+                    ctx.fillText(`最终得分: ${score}`, canvas.width / 2, canvas.height / 2 + 20);
+                } else {
+                    ctx.fillText('💀 游戏结束', canvas.width / 2, canvas.height / 2 - 50);
+                    ctx.font = 'bold 24px Arial';
+                    ctx.fillText('再接再厉！', canvas.width / 2, canvas.height / 2 + 20);
+                }
+                ctx.textAlign = 'left';
+            }, 100);
+        }
+        
+        // 初始化显示
+        draw();
+    </script>
+</body>
+</html>
